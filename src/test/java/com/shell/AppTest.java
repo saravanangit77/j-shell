@@ -1,4 +1,4 @@
-package com.yourname.shell;
+package com.shell;
 
 import static org.junit.Assert.*;
 

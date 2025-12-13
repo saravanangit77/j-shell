@@ -14,6 +14,13 @@
       <version>4.13.2</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>1.18.32</version>
+      <scope>provided</scope>
+    </dependency>
+
   </dependencies>
   <properties>
     <maven.compiler.source>11</maven.compiler.source>
@@ -22,10 +29,10 @@
   </properties>
   <build>
     <plugins>
-      <!-- 
+      <!--
       Code formatting note:
       To add Spotless plugin for automatic formatting, uncomment below when network access is available:
-      
+
       <plugin>
         <groupId>com.diffplug.spotless</groupId>
         <artifactId>spotless-maven-plugin</artifactId>
@@ -39,7 +46,7 @@
           </java>
         </configuration>
       </plugin>
-      
+
       For now, files are manually formatted to IntelliJ/Java standards
       -->
     </plugins>
