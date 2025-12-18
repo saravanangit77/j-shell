@@ -4,6 +4,108 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class Parser {
+    
+    /**
+     * Main entry point for parsing. Analyzes the input and returns the appropriate Command type.
+     * @param input The raw command line input
+     * @return Command object (SimpleCommand, RedirectionCommand, or PipelineCommand)
+     */
+    public static Command parse(String input) {
+        if (input == null || input.trim().isEmpty()) {
+            throw new IllegalArgumentException("empty command input");
+        }
+
+        // Check for pipeline first (contains |)
+        if (input.contains("|")) {
+            return parsePipeline(input);
+        }
+
+        // Tokenize the input
+        List<String> tokens = tokenize(input);
+
+        // Check for redirection operators
+        if (containsRedirectionOperators(tokens)) {
+            return parseRedirection(tokens);
+        }
+
+        // Otherwise, it's a simple command
+        return parseSimple(tokens);
+    }
+
+    /**
+     * Checks if the token list contains redirection operators.
+     */
+    private static boolean containsRedirectionOperators(List<String> tokens) {
+        for (String token : tokens) {
+            if ("<".equals(token) || ">".equals(token) || ">>".equals(token) || "2>".equals(token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Parses a simple command with no redirection or piping.
+     */
+    private static SimpleCommand parseSimple(List<String> tokens) {
+        if (tokens == null || tokens.isEmpty()) {
+            throw new IllegalArgumentException("empty command tokens");
+        }
+
+        String executable = tokens.get(0);
+        
+        // Validate that executable is not a redirection operator
+        if ("<".equals(executable) || ">".equals(executable) || ">>".equals(executable) || "2>".equals(executable)) {
+            throw new IllegalArgumentException("redirection operator '" + executable + "' cannot be used as command");
+        }
+
+        SimpleCommand cmd = new SimpleCommand();
+        cmd.setExecutable(executable);
+        
+        // All remaining tokens are arguments
+        List<String> args = new ArrayList<>();
+        for (int i = 1; i < tokens.size(); i++) {
+            args.add(tokens.get(i));
+        }
+        cmd.setArgs(args);
+        
+        return cmd;
+    }
+
+    /**
+     * Parses a pipeline command (commands separated by |).
+     */
+    private static PipelineCommand parsePipeline(String input) {
+        List<Command> commands = new ArrayList<>();
+        // Use -1 to preserve trailing empty strings (for trailing pipe detection)
+        String[] segments = input.split("\\|", -1);
+        
+        for (String segment : segments) {
+            segment = segment.trim();
+            if (segment.isEmpty()) {
+                throw new IllegalArgumentException("empty command segment in pipeline");
+            }
+            
+            List<String> tokens = tokenize(segment);
+            
+            // Validate that we have at least one token
+            if (tokens.isEmpty()) {
+                throw new IllegalArgumentException("empty command segment in pipeline");
+            }
+            
+            // Each segment could be a simple command or a redirection command
+            if (containsRedirectionOperators(tokens)) {
+                commands.add(parseRedirection(tokens));
+            } else {
+                commands.add(parseSimple(tokens));
+            }
+        }
+        
+        PipelineCommand pipelineCmd = new PipelineCommand();
+        pipelineCmd.setCommands(commands);
+        return pipelineCmd;
+    }
+
     public static List<String> tokenize(String input) {
         List<String> tokens = new ArrayList<>();
         if (input == null || input.isEmpty()) return tokens;
@@ -71,6 +173,11 @@ public class Parser {
         return tokens;
     }
 
+    /**
+     * Parses a command with redirection operators (>, >>, 2>).
+     * @deprecated Use {@link #parse(String)} instead for automatic type detection
+     */
+    @Deprecated
     public static RedirectionCommand parseRedirection(List<String> tokens) {
         if (tokens == null || tokens.isEmpty()) {
             throw new IllegalArgumentException("empty command tokens");
@@ -80,9 +187,16 @@ public class Parser {
         List<String> args = new ArrayList<>();
 
         // First token is the executable
-        rc.setExecutable(tokens.get(0));
+        String executable = tokens.get(0);
+        
+        // Validate that executable is not a redirection operator
+        if ("<".equals(executable) || ">".equals(executable) || ">>".equals(executable) || "2>".equals(executable)) {
+            throw new IllegalArgumentException("redirection operator '" + executable + "' has no target filename");
+        }
+        
+        rc.setExecutable(executable);
 
-        // pendingOperator holds one of ">", ">>", "2>" when we are expecting a filename next
+        // pendingOperator holds one of "<", ">", ">>", "2>" when we are expecting a filename next
         String pendingOperator = null;
 
         for (int i = 1; i < tokens.size(); i++) {
@@ -96,6 +210,9 @@ public class Parser {
                 }
 
                 switch (pendingOperator) {
+                    case "<":
+                        rc.setStdInFile(tok);
+                        break;
                     case ">":
                         rc.setStdOutFile(tok);
                         rc.setAppend(false);
@@ -119,7 +236,7 @@ public class Parser {
             }
 
             // Not currently expecting a filename: check if token is an operator
-            if (">".equals(tok) || ">>".equals(tok) || "2>".equals(tok)) {
+            if ("<".equals(tok) || ">".equals(tok) || ">>".equals(tok) || "2>".equals(tok)) {
                 pendingOperator = tok;
                 continue;
             }

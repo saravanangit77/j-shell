@@ -314,7 +314,6 @@ public class MilestoneChecklistTest {
     @Test
     public void test_PATH_HandlesRelativePaths() throws IOException {
         Path script = testDir.resolve("script.sh");
-        String relPath = "./" + script.getFileName().toString();
         
         // Relative path with "/" should be treated as path, not searched in PATH
         File f = new File(testDir.toFile(), script.getFileName().toString());
