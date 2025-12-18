@@ -1,7 +1,6 @@
 package com.shell;
 
-import com.shell.parser.Parser;
-import com.shell.parser.RedirectionCommand;
+import com.shell.parser.*;
 
 import java.io.*;
 import java.nio.file.Files;
@@ -34,68 +33,31 @@ public class Shell {
                 line = line.trim();
                 if (line.isEmpty()) continue; // ignore empty lines
 
-
-                // simple tokenization by whitespace
-                List<String> cmdArgs = Parser.tokenize(line);
-                String cmd = cmdArgs.get(0);
-
-
-                if(line.contains(">")){
-                    RedirectionCommand redirectionCommand = Parser.parseRedirection(cmdArgs);
-                    executeRedirectionCommand(redirectionCommand);
-                   continue;
+                // Parse the command - automatically detects type (Simple, Redirection, or Pipeline)
+                Command command;
+                try {
+                    command = Parser.parse(line);
+                } catch (Exception e) {
+                    System.err.println("Parse error: " + e.getMessage());
+                    continue;
                 }
-                cmdArgs.remove(0);
-                switch (cmd) {
-                    case "exit":
-                        handleExit(cmdArgs);
-                        // handleExit will call System.exit(0) or break the loop
-                        return;
-                    case "echo":
-                        handleEcho(cmdArgs);
+
+                // Handle based on command type
+                switch (command.getType()) {
+                    case SIMPLE:
+                        handleSimpleCommand((SimpleCommand) command, currentDir);
                         break;
-                    case "type":
-                        handleType(cmdArgs);
+
+                    case REDIRECTION:
+                        handleRedirectionCommand((RedirectionCommand) command, currentDir);
                         break;
-                    case "cd":
-                        // simple cd implementation for now: handle cd with absolute/relative/~ (improve later)
-                        currentDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath();
-                        if (cmdArgs.isEmpty()) {
-                            System.out.println("No directory specified");
-                            currentDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath();
-                        } else {
-                            String target = cmdArgs.get(0);
-                            System.out.println("Target :" + target);
-                            if (target.equals("~") || target.equals("~/")) {
-                                currentDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath();
-                            } else {
-                                Path candidate = currentDir.resolve(target).normalize();
-                                if (Files.exists(candidate) && Files.isDirectory(candidate)) {
-                                    currentDir = candidate.toAbsolutePath();
-                                    System.out.println(Paths.get(System.getProperty("user.dir")).toAbsolutePath());
-                                } else {
-                                    System.out.printf("cd: %s: No such file or directory%n", target);
-                                }
-                            }
-                        }
+
+                    case PIPELINE:
+                        handlePipelineCommand((PipelineCommand) command, currentDir);
                         break;
+
                     default:
-                        String exePath = findExecutable(cmd); // call your PATH lookup here
-                        System.out.println("ExePath :"+ exePath);
-                        if (exePath == null) {
-                            System.out.printf("%s: command not found%n", cmd);
-                        } else {
-                            // combine exePath + original args
-                            String[] argv = new String[1 + cmdArgs.size()];
-                            argv[0] = exePath;
-                            System.arraycopy(cmdArgs.toArray(new String[0]), 0, argv, 1, cmdArgs.size());
-                            try {
-                                executeExternal(argv, currentDir);
-                                // you can decide whether to print exit code or ignore
-                            } catch (IOException | InterruptedException ex) {
-                                System.err.println("Error running command: " + ex.getMessage());
-                            }
-                        }
+                        System.err.println("Unknown command type");
                 }
             }
 
@@ -275,25 +237,133 @@ public class Shell {
     }
 
 
+    /**
+     * Handles simple commands (no redirection or piping).
+     */
+    private static void handleSimpleCommand(SimpleCommand cmd, Path currentDir) {
+        String executable = cmd.getExecutable();
+        List<String> args = cmd.getArgs();
+
+        switch (executable) {
+            case "exit":
+                handleExit(args);
+                return;
+            case "echo":
+                handleEcho(args);
+                break;
+            case "type":
+                handleType(args);
+                break;
+            case "cd":
+                handleCd(args);
+                break;
+            default:
+                // External command
+                String exePath = findExecutable(executable);
+                System.out.println("ExePath: " + exePath);
+                if (exePath == null) {
+                    System.out.printf("%s: command not found%n", executable);
+                } else {
+                    // Combine exePath + args
+                    String[] argv = new String[1 + args.size()];
+                    argv[0] = exePath;
+                    System.arraycopy(args.toArray(new String[0]), 0, argv, 1, args.size());
+                    try {
+                        executeExternal(argv, currentDir);
+                    } catch (IOException | InterruptedException ex) {
+                        System.err.println("Error running command: " + ex.getMessage());
+                    }
+                }
+        }
+    }
+
+    /**
+     * Handles commands with I/O redirection.
+     */
+    private static void handleRedirectionCommand(RedirectionCommand rc, Path currentDir) {
+        executeRedirectionCommand(rc, currentDir);
+    }
+
+    /**
+     * Handles pipeline commands (commands connected with |).
+     */
+    private static void handlePipelineCommand(PipelineCommand pipelineCmd, Path currentDir) {
+        executePipelineWithRedirections(pipelineCmd.getCommands(), currentDir);
+    }
+
+    /**
+     * Handles the 'cd' command.
+     */
+    private static void handleCd(List<String> args) {
+        Path currentDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath();
+        
+        if (args.isEmpty()) {
+            System.out.println("No directory specified");
+        } else {
+            String target = args.get(0);
+            System.out.println("Target: " + target);
+            if (target.equals("~") || target.equals("~/")) {
+                currentDir = Paths.get(System.getProperty("user.home")).toAbsolutePath();
+                try {
+                    System.setProperty("user.dir", currentDir.toString());
+                } catch (Exception e) {
+                    System.err.println("cd: " + e.getMessage());
+                }
+            } else {
+                Path candidate = currentDir.resolve(target).normalize();
+                if (Files.exists(candidate) && Files.isDirectory(candidate)) {
+                    currentDir = candidate.toAbsolutePath();
+                    try {
+                        System.setProperty("user.dir", currentDir.toString());
+                        System.out.println(currentDir);
+                    } catch (Exception e) {
+                        System.err.println("cd: " + e.getMessage());
+                    }
+                } else {
+                    System.out.printf("cd: %s: No such file or directory%n", target);
+                }
+            }
+        }
+    }
+
+    /**
+     * @deprecated Use handleRedirectionCommand(RedirectionCommand, Path) instead
+     */
+    @Deprecated
     public static void executeRedirectionCommand(RedirectionCommand rc){
+        executeRedirectionCommand(rc, Paths.get(System.getProperty("user.dir")).toAbsolutePath());
+    }
+
+    private static void executeRedirectionCommand(RedirectionCommand rc, Path currentDir){
         String executable = rc.getExecutable();
         if(isBuiltIn(executable)){
-//            switch bases on methods
+            // Handle built-in commands with redirection
             switch (executable){
-                case "echo": handleEcho(rc.getArgs(), rc.getStdOutFile(),rc.isAppend(), rc.getStdErrorFile()); break;
-                case "type" :handleType(rc.getArgs(), rc.getStdOutFile(),rc.isAppend(), rc.getStdErrorFile()); break;
+                case "echo": 
+                    handleEcho(rc.getArgs(), rc.getStdOutFile(), rc.isAppend(), rc.getStdErrorFile()); 
+                    break;
+                case "type":
+                    handleType(rc.getArgs(), rc.getStdOutFile(), rc.isAppend(), rc.getStdErrorFile()); 
+                    break;
+                case "cd":
+                    // cd with redirection doesn't make much sense, but handle it
+                    handleCd(rc.getArgs());
+                    break;
+                case "exit":
+                    handleExit(rc.getArgs());
+                    break;
             }
             return;
         }
-        Path currentDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath();
+        // External command with redirection
         executeExternal(rc, currentDir);
-        }
+    }
 
     private static boolean isBuiltIn(String executable) {
         if(executable == null || executable.isBlank())
             throw new IllegalArgumentException("empty command");
 
-        Set<String> builtIns = Set.of("cd","echo", "type");
+        Set<String> builtIns = Set.of("cd", "echo", "type", "exit");
 
         return builtIns.contains(executable);
     }
@@ -306,7 +376,12 @@ public class Shell {
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(workingDir.toFile());
 
-        // STDOUT redirection
+        // STDIN redirection (< input.txt)
+        if (rc.getStdInFile() != null) {
+            pb.redirectInput(new File(rc.getStdInFile()));
+        }
+
+        // STDOUT redirection (> output.txt or >> output.txt)
         if (rc.getStdOutFile() != null) {
             if (rc.isAppend()) {
                 pb.redirectOutput(
@@ -317,7 +392,7 @@ public class Shell {
             }
         }
 
-        // STDERR redirection
+        // STDERR redirection (2> errors.txt)
         if (rc.getStdErrorFile() != null) {
             pb.redirectError(new File(rc.getStdErrorFile()));
         }
@@ -338,6 +413,175 @@ public class Shell {
                     rc.getStdErrorFile()
             );
         }
+    }
+
+
+    /**
+     * Execute a pipeline with proper redirection support for each command.
+     * Handles commands that may have input/output/error redirection.
+     */
+    private static void executePipelineWithRedirections(List<Command> commands, Path workingDir) {
+        InputStream prevOut = null;
+        List<Process> processes = new ArrayList<>();
+        
+        for (int i = 0; i < commands.size(); i++) {
+            Command cmd = commands.get(i);
+            
+            // Build command list
+            List<String> cmdList = new ArrayList<>();
+            cmdList.add(cmd.getExecutable());
+            if (cmd.getArgs() != null) {
+                cmdList.addAll(cmd.getArgs());
+            }
+            
+            ProcessBuilder pb = new ProcessBuilder(cmdList);
+            pb.directory(workingDir.toFile());
+            pb.redirectError(ProcessBuilder.Redirect.INHERIT);
+            
+            // Handle input redirection for first command
+            if (i == 0 && cmd instanceof RedirectionCommand) {
+                RedirectionCommand rc = (RedirectionCommand) cmd;
+                if (rc.getStdInFile() != null) {
+                    pb.redirectInput(new File(rc.getStdInFile()));
+                }
+            }
+            
+            // Handle output redirection for last command
+            if (i == commands.size() - 1 && cmd instanceof RedirectionCommand) {
+                RedirectionCommand rc = (RedirectionCommand) cmd;
+                if (rc.getStdOutFile() != null) {
+                    if (rc.isAppend()) {
+                        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(rc.getStdOutFile())));
+                    } else {
+                        pb.redirectOutput(new File(rc.getStdOutFile()));
+                    }
+                }
+                if (rc.getStdErrorFile() != null) {
+                    pb.redirectError(new File(rc.getStdErrorFile()));
+                }
+            }
+            
+            Process process;
+            try {
+                process = pb.start();
+            } catch (IOException e) {
+                System.err.println("Error starting process: " + e.getMessage());
+                return;
+            }
+            processes.add(process);
+            
+            // If there is previous output, pipe it into this process
+            if (prevOut != null) {
+                InputStream src = prevOut;
+                OutputStream dest = process.getOutputStream();
+                
+                new Thread(() -> {
+                    try {
+                        src.transferTo(dest);
+                        dest.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }).start();
+            } else if (i == 0) {
+                // First command with no input redirection and no previous output
+                // Close stdin if not redirected from file to prevent hanging
+                boolean hasInputRedirection = cmd instanceof RedirectionCommand && 
+                                             ((RedirectionCommand) cmd).getStdInFile() != null;
+                if (!hasInputRedirection) {
+                    try {
+                        process.getOutputStream().close();
+                    } catch (IOException e) {
+                        // Ignore
+                    }
+                }
+            }
+            
+            // Update prevOut for next command
+            prevOut = process.getInputStream();
+        }
+        
+        // If last command doesn't have output redirection, print to stdout
+        Command lastCmd = commands.get(commands.size() - 1);
+        boolean hasOutputRedirection = lastCmd instanceof RedirectionCommand && 
+                                       ((RedirectionCommand) lastCmd).getStdOutFile() != null;
+        
+        if (prevOut != null && !hasOutputRedirection) {
+            try {
+                prevOut.transferTo(System.out);
+            } catch (IOException e) {
+                System.err.println("Error reading pipeline output: " + e.getMessage());
+            }
+        }
+        
+        // Wait for all processes
+        for (Process p : processes) {
+            try {
+                p.waitFor();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Pipeline interrupted");
+            }
+        }
+    }
+
+    /**
+     * @deprecated Use executePipelineWithRedirections instead
+     */
+    @Deprecated
+    private static void executePipeline(List<List<String>> commands) {
+        InputStream prevOut = null;
+        List<Process> processes = new ArrayList<>();
+        for (int i = 0; i < commands.size(); i++) {
+            List<String> cmd = commands.get(i);
+
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.redirectError(ProcessBuilder.Redirect.INHERIT);
+
+            Process process = null;
+            try {
+                process = pb.start();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+            processes.add(process);
+
+            // 🔹 If there is previous output, pipe it into this process
+            if (prevOut != null) {
+                InputStream src = prevOut;
+                OutputStream dest = process.getOutputStream();
+
+                new Thread(() -> {
+                    try {
+                        src.transferTo(dest);
+                        dest.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }).start();
+            }
+
+            // 🔹 Update prevOut for next command
+            prevOut = process.getInputStream();
+        }
+
+        if (prevOut != null) {
+            try {
+                prevOut.transferTo(System.out);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        for (Process p : processes) {
+            try {
+                p.waitFor();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+
     }
 
 
