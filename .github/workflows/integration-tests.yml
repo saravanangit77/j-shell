@@ -7,6 +7,9 @@ on:
       - main
       - master
       - develop
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
   push:
     branches:
       - main
@@ -17,6 +20,11 @@ permissions:
   contents: read
   checks: write
   pull-requests: write
+
+# Cancel in-progress runs of the same workflow for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   integration-tests:
@@ -43,6 +51,14 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: integration-test-results
+        path: target/surefire-reports/
+        retention-days: 7
+    
+    - name: Upload HTML Test Report on Failure
+      uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: integration-test-html-report
         path: target/surefire-reports/
         retention-days: 7
         
