@@ -1,0 +1,182 @@
+name: Integration Tests
+
+on:
+  workflow_call:  # Can be called by other workflows
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  push:
+    branches:
+      - main
+      - master
+      - develop
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+# Cancel in-progress runs of the same workflow for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-tests:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK 11
+      uses: actions/setup-java@v4
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+        cache: maven
+        
+    - name: Run integration tests
+      run: mvn clean verify -P integration-tests
+      continue-on-error: false
+      
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: integration-test-results
+        path: target/surefire-reports/
+        retention-days: 7
+    
+    - name: Upload HTML Test Report on Failure
+      uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: integration-test-html-report
+        path: target/surefire-reports/
+        retention-days: 7
+        
+    - name: Generate integration test report
+      if: always() && github.event_name == 'push'
+      uses: dorny/test-reporter@v1
+      with:
+        name: Integration Tests
+        path: target/surefire-reports/*.xml
+        reporter: java-junit
+        fail-on-error: true
+      continue-on-error: true
+      
+    - name: Publish test summary
+      if: always()
+      run: |
+        echo "# 🔄 Integration Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -d target/surefire-reports ]; then
+          # Parse test results from XML files
+          TOTAL_TESTS=0
+          FAILURES=0
+          ERRORS=0
+          SKIPPED=0
+          PASSED=0
+          
+          echo "<details open>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary><b>📊 Integration Test Summary</b></summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # List all test files found
+          echo "**Test Suites:**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          for file in target/surefire-reports/TEST-*.xml; do
+            if [ -f "$file" ]; then
+              CLASSNAME=$(basename "$file" .xml | sed 's/TEST-//')
+              TESTS=$(grep -oP 'tests="\K[0-9]+' "$file" | head -1)
+              FAILS=$(grep -oP 'failures="\K[0-9]+' "$file" | head -1)
+              ERRS=$(grep -oP 'errors="\K[0-9]+' "$file" | head -1)
+              
+              TOTAL_TESTS=$((TOTAL_TESTS + ${TESTS:-0}))
+              FAILURES=$((FAILURES + ${FAILS:-0}))
+              ERRORS=$((ERRORS + ${ERRS:-0}))
+              SKIPPED=$((SKIPPED + ${SKIP:-0}))
+              
+              # Show status for each test class
+              if [ ${FAILS:-0} -eq 0 ] && [ ${ERRS:-0} -eq 0 ]; then
+                echo "- ✅ \`$CLASSNAME\` ($TESTS tests)" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "- ❌ \`$CLASSNAME\` ($TESTS tests, $((FAILS + ERRS)) failed)" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          PASSED=$((TOTAL_TESTS - FAILURES - ERRORS - SKIPPED))
+          
+          echo "| Metric | Count | Percentage |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 📝 Total Tests | $TOTAL_TESTS | 100% |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ $TOTAL_TESTS -gt 0 ]; then
+            PASS_PCT=$((PASSED * 100 / TOTAL_TESTS))
+            FAIL_PCT=$((FAILURES * 100 / TOTAL_TESTS))
+            ERR_PCT=$((ERRORS * 100 / TOTAL_TESTS))
+            SKIP_PCT=$((SKIPPED * 100 / TOTAL_TESTS))
+          else
+            PASS_PCT=0
+            FAIL_PCT=0
+            ERR_PCT=0
+            SKIP_PCT=0
+          fi
+          
+          echo "| ✅ Passed | $PASSED | ${PASS_PCT}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $FAILURES | ${FAIL_PCT}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔥 Errors | $ERRORS | ${ERR_PCT}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Skipped | $SKIPPED | ${SKIP_PCT}% |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ $FAILURES -eq 0 ] && [ $ERRORS -eq 0 ]; then
+            echo "### ✅ All integration tests passed!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🎉 Great job! All $TOTAL_TESTS integration tests are passing." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Integration Tests Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Failed Tests:** $FAILURES" >> $GITHUB_STEP_SUMMARY
+            echo "**Errors:** $ERRORS" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # List failed tests
+            echo "<details>" >> $GITHUB_STEP_SUMMARY
+            echo "<summary>🔍 View Failed Test Details</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "```" >> $GITHUB_STEP_SUMMARY
+            
+            for file in target/surefire-reports/*.txt; do
+              if [ -f "$file" ] && grep -q "FAILURE\|ERROR" "$file"; then
+                echo "File: $(basename $file)" >> $GITHUB_STEP_SUMMARY
+                grep -A 10 "FAILURE\|ERROR" "$file" | head -30 >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+            
+            echo "```" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 **Full test results:** Available in artifacts (7-day retention)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ No test results found" >> $GITHUB_STEP_SUMMARY
+        fi
+
