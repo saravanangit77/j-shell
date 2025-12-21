@@ -13,6 +13,11 @@ on:
       - master
       - develop
 
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
 jobs:
   integration-tests:
     name: Run Integration Tests
@@ -42,11 +47,62 @@ jobs:
         retention-days: 7
         
     - name: Generate integration test report
-      if: always()
+      if: always() && github.event_name == 'push'
       uses: dorny/test-reporter@v1
       with:
         name: Integration Tests
         path: target/surefire-reports/*.xml
         reporter: java-junit
         fail-on-error: true
+      continue-on-error: true
+      
+    - name: Publish test summary
+      if: always()
+      run: |
+        echo "## Integration Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -d target/surefire-reports ]; then
+          # Parse test results from XML files
+          TOTAL_TESTS=0
+          FAILURES=0
+          ERRORS=0
+          SKIPPED=0
+          
+          for file in target/surefire-reports/TEST-*.xml; do
+            if [ -f "$file" ]; then
+              TESTS=$(grep -oP 'tests="\K[0-9]+' "$file" | head -1)
+              FAILS=$(grep -oP 'failures="\K[0-9]+' "$file" | head -1)
+              ERRS=$(grep -oP 'errors="\K[0-9]+' "$file" | head -1)
+              SKIP=$(grep -oP 'skipped="\K[0-9]+' "$file" | head -1)
+              
+              TOTAL_TESTS=$((TOTAL_TESTS + ${TESTS:-0}))
+              FAILURES=$((FAILURES + ${FAILS:-0}))
+              ERRORS=$((ERRORS + ${ERRS:-0}))
+              SKIPPED=$((SKIPPED + ${SKIP:-0}))
+            fi
+          done
+          
+          echo "📊 **Integration Test Summary**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Total Tests | $TOTAL_TESTS |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | $((TOTAL_TESTS - FAILURES - ERRORS - SKIPPED)) |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $FAILURES |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔥 Errors | $ERRORS |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Skipped | $SKIPPED |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ $FAILURES -eq 0 ] && [ $ERRORS -eq 0 ]; then
+            echo "✅ **All integration tests passed!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Some tests failed - check artifacts for details**" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Test results uploaded as artifacts (7-day retention)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ No test results found" >> $GITHUB_STEP_SUMMARY
+        fi
 
